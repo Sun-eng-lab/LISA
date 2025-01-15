@@ -1,0 +1,419 @@
+/** @jsxImportSource https://esm.sh/react@18.2.0 */
+import React, { useState, useEffect, useRef } from "https://esm.sh/react@18.2.0";
+import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
+import { blob } from "https://esm.town/v/std/blob";
+
+type MessageType = {
+    id: number;
+    text: string;
+    sender: 'user' | 'ai';
+    type?: 'text' | 'image' | 'powerpoint' | 'excel';
+    urls?: string[];
+    imageDetails?: { count: number; size: string; quality: 'standard' | 'hd' };
+    alternatives?: string[];
+    selectedResponseIndex?: number;
+    timestamp?: string;
+};
+
+type ChatHistoryType = {
+    [key: string]: { messages: MessageType[]; timestamp: string };
+};
+
+const App: React.FC = () => {
+    const [messages, setMessages] = useState<MessageType[]>([]);
+    const [input, setInput] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [currentTime, setCurrentTime] = useState(new Date().toLocaleString());
+    const [chatMode, setChatMode] = useState<'humor' | 'professional'>('humor');
+    const [chatHistory, setChatHistory] = useState<ChatHistoryType>({});
+    const [error, setError] = useState<string | null>(null);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const timer = setInterval(() => setCurrentTime(new Date().toLocaleString()), 1000);
+        loadChatHistory().catch((error) => setError(`Error loading chat history: ${error.message}`));
+        return () => clearInterval(timer);
+    }, []);
+
+    useEffect(() => {
+        if (messages.length > 0) {
+            saveChatHistory().catch((error) => setError(`Error saving chat history: ${error.message}`));
+        }
+        scrollToBottom();
+    }, [messages]);
+
+    const scrollToBottom = () => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
+    const loadChatHistory = async () => {
+        try {
+            const history = await blob.getJSON('chat_history') || {};
+            setChatHistory(history);
+        } catch (error) {
+            throw error;
+        }
+    };
+
+    const saveChatHistory = async () => {
+        try {
+            const newHistory = { ...chatHistory, [`chat_${Date.now()}`]: { messages, timestamp: currentTime } };
+            await blob.setJSON('chat_history', newHistory);
+            setChatHistory(newHistory);
+        } catch (error) {
+            throw error;
+        }
+    };
+
+    const resumeChat = (chatKey: string) => {
+        const selectedChat = chatHistory[chatKey];
+        if (selectedChat) {
+            setMessages(selectedChat.messages);
+        } else {
+            setError('Failed to resume chat: Chat not found in history.');
+        }
+    };
+
+    const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        if (!input.trim()) return;
+
+        const newUserMessage: MessageType = { id: Date.now(), text: input, sender: 'user' };
+        setMessages(prev => [...prev, newUserMessage]);
+        setInput('');
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: input, regenerate: false, currentTime, mode: chatMode }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+            }
+
+            const result = await response.json();
+            const newAIMessage: MessageType = { ...result, id: Date.now(), sender: 'ai', timestamp: currentTime };
+            setMessages(prev => [...prev, newAIMessage]);
+        } catch (error) {
+            console.error('Chat error:', error);
+            setMessages(prev => [...prev, { id: Date.now(), text: `Error: ${error.message || "Something went wrong."}`, sender: 'ai', timestamp: currentTime }]);
+            setError(`Chat error: ${error.message || "An unknown error occurred."}`);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const restartChat = () => {
+        setMessages([]);
+        setInput('');
+        setError(null);
+    };
+
+    const toggleChatMode = () => setChatMode(prev => (prev === 'humor' ? 'professional' : 'humor'));
+
+    return (
+        <div className="chat-container">
+            <div className="chat-header">
+                <div className="current-time-display">Current Time: {currentTime}</div>
+                <div className="chat-controls">
+                    <button className="mode-toggle-btn" onClick={toggleChatMode}>
+                        Mode: {chatMode === 'humor' ? '😂 Humor' : '💼 Professional'}
+                    </button>
+                    <button className="restart-chat-btn" onClick={restartChat}>
+                        🔄 Restart Chat
+                    </button>
+                </div>
+            </div>
+            <div className="chat-history">
+                {Object.keys(chatHistory).map((chatKey) => (
+                    <button key={chatKey} className="chat-history-item" onClick={() => resumeChat(chatKey)}>
+                        Chat from {chatHistory[chatKey].timestamp}
+                    </button>
+                ))}
+            </div>
+            <div className="chat-content">
+                <div className="messages">
+                    {messages.map((msg) => (
+                        <>
+                            <div key={msg.id} className={`message-wrapper ${msg.sender}`}>
+                                <div className={`message ${msg.sender}`}>
+                                    {msg.text}
+                                    {msg.timestamp && <div className="message-timestamp">At: {msg.timestamp}</div>}
+                                </div>
+                                <button className="delete-message" onClick={() => setMessages(prev => prev.filter(m => m.id !== msg.id))}>🗑️</button>
+                            </div>
+                        </>
+                    ))}
+                    <div ref={messagesEndRef} />
+                    {isLoading && <div className="loading-indicator">Generating response...</div>}
+                    {error && <div className="error-message">{error}</div>}
+                </div>
+                <div className="input-container">
+                    <form onSubmit={handleSubmit} className="input-area">
+                        <input
+                            type="text"
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            placeholder={chatMode === 'humor' ? "Ask me anything with a laugh, boss..." : "Ask me anything professionally..."}
+                            disabled={isLoading}
+                            className="chat-input"
+                        />
+                        <button type="submit" disabled={isLoading || !input.trim()} className="send-button">
+                            ➤
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+function client() {
+    const rootElement = document.getElementById("root");
+    if (!rootElement) throw new Error("Could not find root element");
+    createRoot(rootElement).render(<App />);
+}
+
+if (typeof document !== "undefined") {
+    try {
+        client();
+    } catch (error) {
+        console.error("Error initializing the app:", error);
+    }
+}
+
+// Server-side logic for handling chat requests
+export default async function server(request: Request): Promise<Response> {
+    if (request.method === 'POST') {
+        try {
+            const body = await request.json();
+            const { message, mode } = body;
+
+            // Simulate AI response (in production, this would call an AI service)
+            const aiResponse = simulateAIResponse(message, mode);
+
+            return new Response(JSON.stringify({
+                response: aiResponse,
+                type: 'text',
+                timestamp: new Date().toLocaleString()
+            }), {
+                headers: { 'Content-Type': 'application/json' }
+            });
+        } catch (error) {
+            console.error("Server error:", error);
+            return new Response(JSON.stringify({
+                error: "An error occurred processing your request.",
+                type: 'text',
+                timestamp: new Date().toLocaleString()
+            }), {
+                status: 500,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+    } else {
+        // If it's not a POST request, return the HTML for the chat app
+        return new Response(`
+            <html>
+                <head>
+                    <title>Chat App</title>
+                    <style>${css}</style>
+                </head>
+                <body>
+                    <div id="root"></div>
+                    <script src="https://esm.town/v/std/catch"></script>
+                    <script type="module" src="${import.meta.url}"></script>
+                </body>
+            </html>
+        `, {
+            headers: { 'Content-Type': 'text/html' }
+        });
+    }
+}
+
+// Function to simulate AI response based on mode
+function simulateAIResponse(message: string, mode: 'humor' | 'professional'): string {
+    let response = '';
+    switch (mode) {
+        case 'humor':
+            response = `Humor mode: Oh, ${message}! That's a good one, boss! Here's something even funnier...`;
+            break;
+        case 'professional':
+            response = `Professional mode: Thank you for your query. Regarding "${message}"...`;
+            break;
+    }
+    response += " Here's some detailed information or a witty remark, depending on the mode.";
+    return response;
+}
+
+const css = `
+/* CSS styles for the chat app */
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Arial', sans-serif;
+  background: linear-gradient(135deg, #6a11cb 0%, #2575fc 100%);
+}
+
+.chat-container {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: white;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  background: linear-gradient(to right, #ff6b6b, #4ecdc4);
+  color: white;
+}
+
+.chat-controls {
+  display: flex;
+  gap: 10px;
+}
+
+.mode-toggle-btn, .restart-chat-btn {
+  background: rgba(255,255,255,0.2);
+  color: white;
+  border: none;
+  padding: 8px 15px;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background 0.3s;
+}
+
+.mode-toggle-btn:hover, .restart-chat-btn:hover {
+  background: rgba(255,255,255,0.3);
+}
+
+.chat-history {
+  display: flex;
+  overflow-x: auto;
+  padding: 10px;
+  background: #f0f0f0;
+}
+
+.chat-history-item {
+  margin-right: 10px;
+  padding: 5px 10px;
+  background: #e0e0e0;
+  border: none;
+  border-radius: 15px;
+  cursor: pointer;
+}
+
+.messages {
+  flex-grow: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background: linear-gradient(to right, #f6d365 0%, #fda085 100%);
+}
+
+.message-wrapper {
+  display: flex;
+  margin-bottom: 15px;
+  align-items: flex-start;
+}
+
+.message {
+  max-width: 70%;
+  padding: 12px 18px;
+  border-radius: 20px;
+  font-size: 16px;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.message.user {
+  background: linear-gradient(to right, #ff8008, #ffc837);
+  color: white;
+  margin-left: auto;
+}
+
+.message.ai {
+  background: linear-gradient(to right, #11998e, #38ef7d);
+  color: white;
+  margin-right: auto;
+}
+
+.delete-message {
+  background: linear-gradient(to right, #ff416c, #ff4b2b);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 10px;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.delete-message:hover {
+  transform: scale(1.1);
+}
+
+.input-container {
+  padding: 15px;
+  background: linear-gradient(to right, #4ecdc4, #45b7d1);
+}
+
+.input-area {
+  display: flex;
+  align-items: center;
+}
+
+.chat-input {
+  flex-grow: 1;
+  padding: 12px;
+  border: 2px solid #4ecdc4;
+  border-radius: 25px;
+  font-size: 16px;
+  margin-right: 10px;
+  background: linear-gradient(to right, #ffffff, #f0f0f0);
+}
+
+.send-button {
+  background: linear-gradient(to right, #ff8008, #ffc837);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.send-button:hover {
+  transform: scale(1.1);
+}
+
+.loading-indicator {
+  text-align: center;
+  color: #2575fc;
+  padding: 10px;
+  font-weight: bold;
+}
+
+.error-message {
+  color: red;
+  text-align: center;
+  padding: 10px;
+  background: rgba(255, 0, 0, 0.1);
+  border-radius: 5px;
+}
+`;
